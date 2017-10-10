@@ -48,8 +48,15 @@ k_err_t kuzzle_init(kuzzle_settings_t *settings);
  */
 void kuzzle_fw_update_sub();
 
-// FIXME: Add callbacks...
+/**
+ * @brief kuzzle_device_own_state_sub
+ */
 void kuzzle_device_own_state_sub(); // TODO: allow one to subscribe to document created/updated/deleted...
-void kuzzle_device_state_pub(k_device_id_t device_id, const char* jstate);
+
+/**
+ * @brief kuzzle_device_state_pub
+ * @param device_state: the state of the device as a JSON object string (e.g. "{ "myprop1": "value", "myprop2": false ...}")
+ */
+void kuzzle_device_state_pub(const char* jstate);
 
 #endif // __KUZZLE_IOT_H

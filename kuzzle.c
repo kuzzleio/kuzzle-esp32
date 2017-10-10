@@ -47,8 +47,9 @@ static const char* KUZZLE_REQUEST_TOPIC  = "Kuzzle/request";  //!< This is the M
 static const char* KUZZLE_RESPONSE_TOPIC = "Kuzzle/response"; //!< This is the MQTT to susbcribe to receive Kuzzle responses
 
 /// Device state publishing Kuzzle query fmt string
-static const char* pubish_device_state_fmt = "{\"index\":\"" K_INDEX_IOT "\",\"collection\":\"" K_COLLECTION_DEVICE_STATES
-                                             "\",\"controller\":\"" K_CONTROLLER_DOCUMENT "\",\"action\":\"create\",\"body\":%s}";
+static const char* pubish_device_state_fmt =
+    "{\"index\":\"" K_INDEX_IOT "\",\"collection\":\"" K_COLLECTION_DEVICE_STATES "\",\"controller\":\"" K_CONTROLLER_DOCUMENT
+    "\",\"action\":\"create\",\"body\": { \"device_id\" : \"" K_DEVICE_ID_FMT "\", \"device_type\":\"%s\", \"state\" : %s}}";
 
 /// Kuzzle subscribe query fmt string
 /// Parameters:
@@ -140,9 +141,10 @@ void kuzzle_query_for_fw_update()
 }
 
 /**
- * @brief kuzzle_publish_state
+ * @brief kuzzle_device_state_pub
+ * @param device_state: the state of the device as a JSON object string (e.g. "{ "myprop1": "value", "myprop2": false ...}")
  */
-void kuzzle_publish_state(const char* device_state)
+void kuzzle_device_state_pub(const char* device_state)
 {
     if (kuzzle.mqtt_client == NULL) {
         ESP_LOGW(TAG, "MQTT client not initialized yet...")
@@ -150,7 +152,12 @@ void kuzzle_publish_state(const char* device_state)
         char req_buffer[K_REQUEST_MAX_SIZE] = {0};
 
         // TODO: Add error handling...
-        snprintf(req_buffer, K_REQUEST_MAX_SIZE, pubish_device_state_fmt, device_state);
+        snprintf(req_buffer,
+                 K_REQUEST_MAX_SIZE,
+                 pubish_device_state_fmt,
+                 K_DEVICE_ID_ARGS(kuzzle.s->device_id),
+                 kuzzle.s->device_type,
+                 device_state);
 
         ESP_LOGD(TAG, "Publishing msg: %s", req_buffer);
         mqtt_publish(kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req_buffer, strlen(req_buffer), 0, 0);
@@ -207,7 +214,7 @@ void _on_device_state_changed(cJSON* jresponse)
 {
     ESP_LOGD(TAG, "Device state changed");
 
-    if(kuzzle.s->on_device_state_changed_notification) {
+    if (kuzzle.s->on_device_state_changed_notification) {
         ESP_LOGD(TAG, "->Calling app callback");
         kuzzle.s->on_device_state_changed_notification(jresponse);
     }
@@ -220,7 +227,7 @@ static void _on_fw_update_pushed(cJSON* jresponse)
     cJSON* jresult = cJSON_GetObjectItem(jresponse, "result");
     cJSON* jfwdoc  = cJSON_GetObjectItem(jresult, "_source");
 
-    if(kuzzle.s->on_fw_update_notification) {
+    if (kuzzle.s->on_fw_update_notification) {
         ESP_LOGD(TAG, "->Calling app callback");
         kuzzle.s->on_fw_update_notification(jfwdoc);
     }
@@ -261,7 +268,7 @@ static void _on_response(cJSON* jresponse)
                 cJSON* jhits  = cJSON_GetObjectItem(jresult, "hits");
                 cJSON* jfwdoc = cJSON_GetObjectItem(cJSON_GetArrayItem(jhits, 0), "_source");
 
-                if(kuzzle.s->on_fw_update_notification != NULL) {
+                if (kuzzle.s->on_fw_update_notification != NULL) {
                     ESP_LOGD(TAG, "-> Call application callback");
                     kuzzle.s->on_fw_update_notification(jfwdoc);
                 }

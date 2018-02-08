@@ -17,6 +17,7 @@ typedef enum {
 } k_err_t;
 
 typedef void (*kuzzle_callback)(cJSON* jresponse);
+typedef void (*kuzzle_connected_cd)(void);
 
 typedef uint8_t k_device_id_t[6];
 typedef char*   k_device_type_t;
@@ -25,11 +26,15 @@ typedef struct {
     k_device_id_t device_id;
     k_device_type_t device_type;
 
-    const char *host;
+    char *host;
     uint32_t port;
+
+    const char* username;
+    const char* password;
 
     kuzzle_callback on_fw_update_notification;
     kuzzle_callback on_device_state_changed_notification;
+    kuzzle_connected_cd on_connected;
 
 } kuzzle_settings_t;
 

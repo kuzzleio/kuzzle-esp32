@@ -7,13 +7,14 @@
 
 #include "kuzzle.h"
 
+#include "malloc.h"
 #include "mqtt.h"
 
 #define TAG "KUZZLE"
 
 //!< Kuzzle sample IOT index and collections
 
-#define K_INDEX_IOT "iot-3" //!< The index where our IOT collection where be located
+#define K_INDEX_IOT "iot" //!< The index where our IOT collection where be located
 #define K_COLLECTION_DEVICE_INFO \
     "device-info" //!< A collection of IOT devices (this collection will contain general inforamtion about our devices)
 #define K_COLLECTION_DEVICE_STATES \
@@ -35,11 +36,13 @@
 
 //!< This tag is used to track response from
 //!<a firmware update notification subscribtion
-#define REQ_ID_SUBSCRIBE_FW_UPDATE "subfw_update"
+#define REQ_ID_SUBSCRIBE_FW_UPDATE "sub_fw_update"
 
 //!< This tag is used to track reponse from publish the device own state (this allow for avoiding trying
 //! the apply and re-publish a state we just published)
 #define REQ_ID_PUBLISH_OWN_STATE "publish_own_state"
+
+#define REQ_ID_LOGIN "login"
 
 //!< Kuzzle MQTT topics:
 
@@ -49,7 +52,13 @@ static const char* KUZZLE_RESPONSE_TOPIC = "Kuzzle/response"; //!< This is the M
 /// Device state publishing Kuzzle query fmt string
 static const char* pubish_device_state_fmt =
     "{\"index\":\"" K_INDEX_IOT "\",\"collection\":\"" K_COLLECTION_DEVICE_STATES "\",\"controller\":\"" K_CONTROLLER_DOCUMENT
-    "\",\"action\":\"create\",\"body\": { \"device_id\" : \"" K_DEVICE_ID_FMT "\", \"device_type\":\"%s\", \"state\" : %s}}";
+    "\",\"action\":\"create\",\"body\": { \"device_id\" : \"" K_DEVICE_ID_FMT
+    "\", \"device_type\":\"%s\",  \"partial_state\": false, \"state\" : %s}}";
+
+static const char* login_request_fmt =
+    "{ \"controller\": \"auth\", \"action\": \"login\", \"strategy\": \"%s\", \"expiresIn\": \"%s\",\"requestId\":\"" REQ_ID_LOGIN
+    "\", "
+    "\"body\": { \"username\": \"%s\", \"password\": \"%s\"}}";
 
 /// Kuzzle subscribe query fmt string
 /// Parameters:
@@ -61,7 +70,9 @@ static const char* subscribe_req_fmt =
     "\",\"action\":\"subscribe\",\"requestId\":\"%s\",\"body\":%s}";
 
 /// Kuzzle DSL queries for subscribing to own state and to fw update
-static const char* subscribe_own_state_fmt  = "{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}}";
+static const char* subscribe_own_state_fmt  =
+        "{\"and\":[{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}},{\"equals\": {\"partial_state\": true}}]}";
+        //"{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}}";
 static const char* subscribe_fw_updates_fmt = "{\"equals\":{\"target\": \"%s\"}}";
 
 static const char* get_fw_update_req_fmt =
@@ -71,10 +82,19 @@ static const char* get_fw_update_req_fmt =
     "\"%d\"}},\"sort\":{\"_kuzzle_info.createdAt\":{\"order\":"
     "\"desc\"}}}}";
 
+typedef enum {
+    K_STATE_NONE,
+    K_STATE_SUBSCRIBING_KUZZLE_RESPONSE,
+    K_STATE_LOGING_IN,
+    K_STATE_SUBSCRIBING_FW_UPDATE,
+    K_STATE_SUBSCRIBING_DEVICE_OWN_STATE,
+    K_STATE_READY,
+} k_state_t;
+
 // -- MQTT callbacks --
 static void _on_mqtt_connected(mqtt_client* client, mqtt_event_data_t* event_data);
 static void _on_mqtt_disconnected(mqtt_client* client, mqtt_event_data_t* event_data);
-static void _on_mqtt_kuzzle_response_subscribed(mqtt_client* client, mqtt_event_data_t* event_data);
+static void _on_mqtt_subscribed(mqtt_client* client, mqtt_event_data_t* event_data);
 static void _on_mqtt_published(mqtt_client* client, mqtt_event_data_t* event_data);
 static void _on_mqtt_data_received(mqtt_client* client, mqtt_event_data_t* event_data);
 
@@ -93,35 +113,45 @@ static mqtt_settings _mqtt_settings = {.auto_reconnect  = true,
                                        .lwt_retain      = 0,
                                        .connected_cb    = _on_mqtt_connected,
                                        .disconnected_cb = _on_mqtt_disconnected,
-                                       .subscribe_cb    = _on_mqtt_kuzzle_response_subscribed,
+                                       .subscribe_cb    = _on_mqtt_subscribed,
                                        .publish_cb      = _on_mqtt_published,
                                        .data_cb         = _on_mqtt_data_received};
 
 typedef struct {
     kuzzle_settings_t* s;
     mqtt_client*       mqtt_client;
+    char*              jwt;
+
+    bool subscribed_fw_updates;
+    bool subscribed_state;
+
+    char* mqtt_topic;   ///< Contains the topic of the mqtt message being received (a message can be received accross several
+                        /// callbacks)
+    char* mqtt_message; ///< Buffer that will contain the full message
+
+    k_state_t state;
 } kuzzle_priv_t;
 
-static kuzzle_priv_t kuzzle = {0};
+static kuzzle_priv_t _kuzzle = {0};
 
 k_err_t kuzzle_init(kuzzle_settings_t* settings)
 {
     ESP_LOGD(TAG, "Initialising Kuzzle");
 
-    if (kuzzle.mqtt_client != NULL) {
+    if (_kuzzle.mqtt_client != NULL) {
         ESP_LOGW(TAG, "Kuzzle alraydai initialized...");
         return K_ERR_ALREADY_INIT;
     }
 
-    kuzzle.s = settings;
+    _kuzzle.s = settings;
 
     memcpy(_mqtt_settings.host, settings->host, strlen(settings->host));
     _mqtt_settings.port = settings->port;
     snprintf(_mqtt_settings.client_id, CONFIG_MQTT_MAX_CLIENT_LEN, K_DEVICE_ID_FMT, K_DEVICE_ID_ARGS(settings->device_id));
 
-    kuzzle.mqtt_client = mqtt_start(&_mqtt_settings);
+    _kuzzle.mqtt_client = mqtt_start(&_mqtt_settings);
 
-    return kuzzle.mqtt_client != NULL ? K_ERR_NONE : K_ERR_NO_MEM;
+    return _kuzzle.mqtt_client != NULL ? K_ERR_NONE : K_ERR_NO_MEM;
 }
 
 /**
@@ -132,12 +162,59 @@ k_err_t kuzzle_init(kuzzle_settings_t* settings)
  */
 void kuzzle_query_for_fw_update()
 {
-    if (kuzzle.mqtt_client == NULL) {
+    if (_kuzzle.mqtt_client == NULL) {
         ESP_LOGW(TAG, "MQTT client not initialized yet...")
     } else {
         ESP_LOGD(TAG, "Publishing msg: %s", get_fw_update_req_fmt);
-        mqtt_publish(kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, get_fw_update_req_fmt, strlen(get_fw_update_req_fmt), 0, 0);
+        mqtt_publish(_kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, get_fw_update_req_fmt, strlen(get_fw_update_req_fmt), 0, 0);
     }
+}
+
+/**
+ * @brief kuzzle_login
+ */
+void kuzzle_login()
+{
+    if (_kuzzle.mqtt_client == NULL) {
+        ESP_LOGW(TAG, "kuzzle_login: MQTT client not initialized yet...")
+    } else {
+        char req_buffer[K_REQUEST_MAX_SIZE] = {0};
+
+        _kuzzle.state = K_STATE_LOGING_IN;
+        snprintf(req_buffer, K_REQUEST_MAX_SIZE, login_request_fmt, "local", "1d", _kuzzle.s->username, _kuzzle.s->password);
+
+        ESP_LOGD(TAG, "Publishing msg: %s", req_buffer);
+        mqtt_publish(_kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req_buffer, strlen(req_buffer), 0, 0);
+    }
+}
+
+/**
+ * @brief _kuzzle_request_add_jwt_token
+ *
+ * Will add the jwt token if logged in
+ *
+ * @param request
+ * @return request : must be deleted with free()
+ */
+static char *_query_add_jwt_token(const char *query){
+    if(_kuzzle.jwt == NULL) {
+        return strdup(query);
+    }
+    else
+    {
+        cJSON *j_req = cJSON_Parse(query);
+        cJSON_AddItemToObject(j_req, "jwt", cJSON_CreateString(_kuzzle.jwt));
+        char *res = cJSON_Print(j_req);
+        cJSON_Delete(j_req);
+        return res;
+    }
+}
+
+static void _publish_kuzzle_query(const char *query) {
+    char *req = _query_add_jwt_token(query);
+    ESP_LOGD(TAG, "Publishing msg: %s", query);
+    mqtt_publish(_kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req, strlen(req), 0, 0);
+    free(req);
 }
 
 /**
@@ -146,21 +223,22 @@ void kuzzle_query_for_fw_update()
  */
 void kuzzle_device_state_pub(const char* device_state)
 {
-    if (kuzzle.mqtt_client == NULL) {
+    if (_kuzzle.state != K_STATE_READY) {
+        ESP_LOGW(TAG, "Kuzzle not ready to publish state...");
+        return;
+    }
+
+    if (_kuzzle.mqtt_client == NULL) {
         ESP_LOGW(TAG, "MQTT client not initialized yet...")
     } else {
         char req_buffer[K_REQUEST_MAX_SIZE] = {0};
-
-        // TODO: Add error handling...
         snprintf(req_buffer,
                  K_REQUEST_MAX_SIZE,
                  pubish_device_state_fmt,
-                 K_DEVICE_ID_ARGS(kuzzle.s->device_id),
-                 kuzzle.s->device_type,
+                 K_DEVICE_ID_ARGS(_kuzzle.s->device_id),
+                 _kuzzle.s->device_type,
                  device_state);
-
-        ESP_LOGD(TAG, "Publishing msg: %s", req_buffer);
-        mqtt_publish(kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req_buffer, strlen(req_buffer), 0, 0);
+        _publish_kuzzle_query(req_buffer);
     }
 }
 
@@ -171,55 +249,73 @@ void kuzzle_device_state_pub(const char* device_state)
  */
 void kuzzle_device_own_state_sub()
 {
-    ESP_LOGD(TAG, "Subscribing to own state: " K_DEVICE_ID_FMT, K_DEVICE_ID_ARGS(kuzzle.s->device_id));
+    ESP_LOGD(TAG, "Subscribing to own state: " K_DEVICE_ID_FMT, K_DEVICE_ID_ARGS(_kuzzle.s->device_id));
 
-    if (kuzzle.mqtt_client == NULL) {
+    if (_kuzzle.mqtt_client == NULL) {
         ESP_LOGW(TAG, "MQTT client not initialized yet...");
     } else {
         char query_buffer[K_DOCUMENT_MAX_SIZE] = {0};
         char req_buffer[K_REQUEST_MAX_SIZE]    = {0};
 
-        // TODO: Add error handling...
-        snprintf(query_buffer, K_DOCUMENT_MAX_SIZE, subscribe_own_state_fmt, K_DEVICE_ID_ARGS(kuzzle.s->device_id));
-        snprintf(
-            req_buffer, K_REQUEST_MAX_SIZE, subscribe_req_fmt, K_COLLECTION_DEVICE_STATES, REQ_ID_SUBSCRIBE_STATE, query_buffer);
+        _kuzzle.state = K_STATE_SUBSCRIBING_DEVICE_OWN_STATE;
 
-        ESP_LOGD(TAG, "Publishing msg: %s", req_buffer);
-        mqtt_publish(kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req_buffer, strlen(req_buffer), 0, 0);
+        snprintf(query_buffer, K_DOCUMENT_MAX_SIZE, subscribe_own_state_fmt, K_DEVICE_ID_ARGS(_kuzzle.s->device_id));
+        snprintf(req_buffer,
+                 K_REQUEST_MAX_SIZE,
+                 subscribe_req_fmt,
+                 K_COLLECTION_DEVICE_STATES,
+                 REQ_ID_SUBSCRIBE_STATE,
+                 query_buffer);
+
+        _publish_kuzzle_query(req_buffer);
     }
 }
 
+/**
+ * @brief kuzzle_fw_update_sub
+ */
 void kuzzle_fw_update_sub()
 {
-    ESP_LOGD(TAG, "Subscribing to fw update %s", kuzzle.s->device_type);
+    ESP_LOGD(TAG, "Subscribing to fw update %s", _kuzzle.s->device_type);
 
-    if (kuzzle.mqtt_client == NULL) {
+    if (_kuzzle.mqtt_client == NULL) {
         ESP_LOGW(TAG, "MQTT client not initialized yet...")
     } else {
         char query_buffer[K_DOCUMENT_MAX_SIZE] = {0};
         char req_buffer[K_REQUEST_MAX_SIZE]    = {0};
 
-        // TODO: Add error handling...
-        snprintf(query_buffer, K_DOCUMENT_MAX_SIZE, subscribe_fw_updates_fmt, kuzzle.s->device_type);
+        _kuzzle.state = K_STATE_SUBSCRIBING_FW_UPDATE;
+        snprintf(query_buffer, K_DOCUMENT_MAX_SIZE, subscribe_fw_updates_fmt, _kuzzle.s->device_type);
 
-        snprintf(
-            req_buffer, K_REQUEST_MAX_SIZE, subscribe_req_fmt, K_COLLECTION_FW_UPDATES, REQ_ID_SUBSCRIBE_FW_UPDATE, query_buffer);
+        snprintf(req_buffer,
+                 K_REQUEST_MAX_SIZE,
+                 subscribe_req_fmt,
+                 K_COLLECTION_FW_UPDATES,
+                 REQ_ID_SUBSCRIBE_FW_UPDATE,
+                 query_buffer);
 
-        ESP_LOGD(TAG, "Publishing msg: %s", req_buffer);
-        mqtt_publish(kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req_buffer, strlen(req_buffer), 0, 0);
+        _publish_kuzzle_query(req_buffer);
     }
 }
 
+/**
+ * @brief _on_device_state_changed
+ * @param jresponse
+ */
 void _on_device_state_changed(cJSON* jresponse)
 {
     ESP_LOGD(TAG, "Device state changed");
 
-    if (kuzzle.s->on_device_state_changed_notification) {
+    if (_kuzzle.s->on_device_state_changed_notification) {
         ESP_LOGD(TAG, "->Calling app callback");
-        kuzzle.s->on_device_state_changed_notification(jresponse);
+        _kuzzle.s->on_device_state_changed_notification(jresponse);
     }
 }
 
+/**
+ * @brief _on_fw_update_pushed
+ * @param jresponse
+ */
 static void _on_fw_update_pushed(cJSON* jresponse)
 {
     ESP_LOGD(TAG, "Firmware update pushed from Kuzzle");
@@ -227,12 +323,39 @@ static void _on_fw_update_pushed(cJSON* jresponse)
     cJSON* jresult = cJSON_GetObjectItem(jresponse, "result");
     cJSON* jfwdoc  = cJSON_GetObjectItem(jresult, "_source");
 
-    if (kuzzle.s->on_fw_update_notification) {
+    if (_kuzzle.s->on_fw_update_notification) {
         ESP_LOGD(TAG, "->Calling app callback");
-        kuzzle.s->on_fw_update_notification(jfwdoc);
+        _kuzzle.s->on_fw_update_notification(jfwdoc);
     }
 }
 
+void _log_responce_error_message(cJSON* jerror)
+{
+    cJSON* jstatus = cJSON_GetObjectItem(jerror, "status");
+    assert(jstatus != NULL);
+    int16_t status = jstatus->valueint;
+
+    cJSON* jmessage = cJSON_GetObjectItem(jerror, "message");
+    assert(jmessage != NULL);
+    char* message = jmessage->valuestring;
+
+    ESP_LOGE(TAG, "Error %d: %s", status, message);
+}
+
+static void _on_login_response(cJSON* jlogin)
+{
+    cJSON* jjwt = cJSON_GetObjectItem(jlogin, "jwt");
+    assert(jjwt != NULL);
+    assert(jjwt->type = cJSON_String);
+
+    _kuzzle.jwt = strdup(jjwt->valuestring);
+
+    // TODO: add a logged in callback?
+    // -- publish current state --
+    //    kuzzle_publish_state();  // TODO
+    // -- subscribe to own state --
+    kuzzle_device_own_state_sub();
+}
 /**
  * @brief _on_response
  * @param jresponse the cJSON of Kuzzle response
@@ -268,9 +391,9 @@ static void _on_response(cJSON* jresponse)
                 cJSON* jhits  = cJSON_GetObjectItem(jresult, "hits");
                 cJSON* jfwdoc = cJSON_GetObjectItem(cJSON_GetArrayItem(jhits, 0), "_source");
 
-                if (kuzzle.s->on_fw_update_notification != NULL) {
+                if (_kuzzle.s->on_fw_update_notification != NULL) {
                     ESP_LOGD(TAG, "-> Call application callback");
-                    kuzzle.s->on_fw_update_notification(jfwdoc);
+                    _kuzzle.s->on_fw_update_notification(jfwdoc);
                 }
             }
         } else if (strcmp(REQ_ID_SUBSCRIBE_STATE, jrequestid->valuestring) == 0) {
@@ -281,7 +404,7 @@ static void _on_response(cJSON* jresponse)
 
             assert(jchannel->type == cJSON_String);
 
-            mqtt_subscribe(kuzzle.mqtt_client, jchannel->valuestring, 0);
+            mqtt_subscribe(_kuzzle.mqtt_client, jchannel->valuestring, 0);
         } else if (strcmp(REQ_ID_SUBSCRIBE_FW_UPDATE, jrequestid->valuestring) == 0) {
             ESP_LOGD(TAG, LOG_COLOR(LOG_COLOR_GREEN) "Received response from FW UPDATES sub");
 
@@ -290,8 +413,17 @@ static void _on_response(cJSON* jresponse)
 
             assert(jchannel->type == cJSON_String);
 
-            mqtt_subscribe(kuzzle.mqtt_client, jchannel->valuestring, 0);
+            mqtt_subscribe(_kuzzle.mqtt_client, jchannel->valuestring, 0);
+        } else if (strcmp(REQ_ID_LOGIN, jrequestid->valuestring) == 0) {
+            ESP_LOGD(TAG, LOG_COLOR(LOG_COLOR_GREEN) "Received response from LOGIN");
+            cJSON* jresult = cJSON_GetObjectItem(jresponse, "result");
+            _on_login_response(jresult);
         }
+    } else {
+        cJSON* jerror = cJSON_GetObjectItem(jresponse, "error");
+        assert(jerror != NULL);
+
+        _log_responce_error_message(jerror);
     }
 }
 
@@ -304,6 +436,8 @@ void _on_mqtt_connected(mqtt_client* client, mqtt_event_data_t* event_data)
 {
     ESP_LOGD(TAG, "MQTT: connected");
 
+    _kuzzle.state = K_STATE_SUBSCRIBING_KUZZLE_RESPONSE;
+
     // Scubscribe to Kuzzle response topic
     mqtt_subscribe(client, KUZZLE_RESPONSE_TOPIC, 0);
 }
@@ -313,44 +447,46 @@ void _on_mqtt_connected(mqtt_client* client, mqtt_event_data_t* event_data)
  * @param client
  * @param event_data
  */
-void _on_mqtt_disconnected(mqtt_client* client, mqtt_event_data_t* event_data) { ESP_LOGD(TAG, "MQTT: disconnected"); }
-
-/**
- * @brief mqtt_kuzzle_light_state_subscribed
- * @param client
- * @param event_data
- */
-void _on_mqtt_fw_updates_subscribed(mqtt_client* client, mqtt_event_data_t* event_data)
+void _on_mqtt_disconnected(mqtt_client* client, mqtt_event_data_t* event_data)
 {
-    ESP_LOGD(TAG, "MQTT: subscribed to fw updates");
-}
-/**
- * @brief mqtt_kuzzle_light_state_subscribed
- * @param client
- * @param event_data
- */
-void _on_device_state_subscribed(mqtt_client* client, mqtt_event_data_t* event_data)
-{
-    ESP_LOGD(TAG, "MQTT: subscribed to light state");
-
-    client->settings->subscribe_cb = _on_mqtt_fw_updates_subscribed;
-    kuzzle_fw_update_sub();
+    _kuzzle.state = K_STATE_NONE;
+    ESP_LOGD(TAG, "MQTT: disconnected");
+    return;
 }
 
 /**
- * @brief mqtt_kuzzle_response_subscribed
+ * @brief _on_mqtt_subscribed
  * @param client
  * @param event_data
  */
-static void _on_mqtt_kuzzle_response_subscribed(mqtt_client* client, mqtt_event_data_t* event_data)
+static void _on_mqtt_subscribed(mqtt_client* client, mqtt_event_data_t* event_data)
 {
-    ESP_LOGD(TAG, "MQTT: subscribed to topic: %s", KUZZLE_RESPONSE_TOPIC);
-    // -- publish current state --
-    //    kuzzle_publish_state();
-    // -- subscribe to own state --
 
-    client->settings->subscribe_cb = _on_device_state_subscribed;
-    kuzzle_device_own_state_sub();
+    switch (_kuzzle.state) {
+        case K_STATE_SUBSCRIBING_KUZZLE_RESPONSE:
+            ESP_LOGD(TAG, "MQTT: subscribed to topic: %s", KUZZLE_RESPONSE_TOPIC);
+            if (_kuzzle.s->username != NULL) {
+                kuzzle_login();
+            } else {
+                ESP_LOGD(TAG, "No user credential provided, assuming ANONYMOUS");
+                kuzzle_device_own_state_sub();
+            }
+            break;
+
+        case K_STATE_SUBSCRIBING_DEVICE_OWN_STATE:
+            ESP_LOGD(TAG, "MQTT: subscribed to topic: %s", "Device own state");
+            kuzzle_fw_update_sub();
+            break;
+
+        case K_STATE_SUBSCRIBING_FW_UPDATE:
+            ESP_LOGD(TAG, "MQTT: subscribed to topic: %s", "firmware update");
+            _kuzzle.state = K_STATE_READY;
+            if(_kuzzle.s->on_connected)
+                _kuzzle.s->on_connected();
+            break;
+        default:
+            break;
+    }
 }
 
 /**
@@ -358,7 +494,11 @@ static void _on_mqtt_kuzzle_response_subscribed(mqtt_client* client, mqtt_event_
  * @param client
  * @param event_data
  */
-static void _on_mqtt_published(mqtt_client* client, mqtt_event_data_t* event_data) { ESP_LOGD(TAG, "MQTT: published"); }
+static void _on_mqtt_published(mqtt_client* client, mqtt_event_data_t* event_data)
+{
+    ESP_LOGD(TAG, "MQTT: published");
+    return;
+}
 
 /**
  * @brief mqtt_data_received
@@ -367,20 +507,46 @@ static void _on_mqtt_published(mqtt_client* client, mqtt_event_data_t* event_dat
  */
 static void _on_mqtt_data_received(mqtt_client* client, mqtt_event_data_t* event_data)
 {
-    ESP_LOGD(TAG, "MQTT: data received:");
+    ESP_LOGD(TAG,
+             "MQTT: data received: %d (%d/%d)",
+             event_data->data_length,
+             event_data->data_offset + event_data->data_length,
+             event_data->data_total_length);
 
-    ESP_LOGD(TAG, "\tfrom topic: %.*s", event_data->topic_length, event_data->topic);
-    ESP_LOGD(TAG, "\tdata: %.*s", event_data->data_length, event_data->data + event_data->data_offset);
+    //    ESP_LOGD(TAG, "\tfrom topic: %.*s", event_data->topic_length, event_data->topic);
+    //    ESP_LOGD(TAG, "\tdata: %.*s", event_data->data_length, event_data->data);
 
     /* -- Parse response status -- */
 
-    cJSON* jresponse = cJSON_Parse(event_data->data + event_data->data_offset); // cJASON_Parse
+    if (event_data->topic) {
+        // if the event contains the topic, then, it's the first one
+
+        _kuzzle.mqtt_topic = malloc(event_data->topic_length + 1);
+        memcpy(_kuzzle.mqtt_topic, event_data->topic, event_data->topic_length);
+        _kuzzle.mqtt_topic[event_data->topic_length] = 0;
+
+        _kuzzle.mqtt_message                                = malloc(event_data->data_total_length + 1);
+        _kuzzle.mqtt_message[event_data->data_total_length] = 0;
+    }
+
+    memcpy(_kuzzle.mqtt_message + event_data->data_offset, event_data->data, event_data->data_length);
+
+    if (event_data->data_offset + event_data->data_length == event_data->data_total_length) {
+        ESP_LOGD(TAG, "Message fully received...");
+        ESP_LOGI(TAG, "%s", _kuzzle.mqtt_message);
+    } else
+        return; // FIXME: avoid return in the middle of the function
+
+    cJSON* jresponse = cJSON_Parse(_kuzzle.mqtt_message);
+
+    if (jresponse == NULL)
+        return; // FIXME
+
     // doesn't need a null
     // terminated string
     assert(jresponse != NULL);
 
-    if (event_data->topic_length == strlen(KUZZLE_RESPONSE_TOPIC) &&
-        strncmp(event_data->topic, KUZZLE_RESPONSE_TOPIC, event_data->topic_length) == 0) {
+    if (strcmp(_kuzzle.mqtt_topic, KUZZLE_RESPONSE_TOPIC) == 0) {
         _on_response(jresponse);
     } else {
         // switch according to the source collection to see if its a FW_UPDATE or STATE change nofitication
@@ -396,6 +562,10 @@ static void _on_mqtt_data_received(mqtt_client* client, mqtt_event_data_t* event
     }
 
     cJSON_Delete(jresponse);
+    free(_kuzzle.mqtt_message);
+    free(_kuzzle.mqtt_topic);
+    _kuzzle.mqtt_message = NULL;
+    _kuzzle.mqtt_topic   = NULL;
 
     ESP_LOGD("MEM", LOG_BOLD(LOG_COLOR_PURPLE) "free mem: %d", esp_get_free_heap_size());
 }

@@ -70,9 +70,9 @@ static const char* subscribe_req_fmt =
     "\",\"action\":\"subscribe\",\"requestId\":\"%s\",\"body\":%s}";
 
 /// Kuzzle DSL queries for subscribing to own state and to fw update
-static const char* subscribe_own_state_fmt  =
-        "{\"and\":[{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}},{\"equals\": {\"partial_state\": true}}]}";
-        //"{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}}";
+static const char* subscribe_own_state_fmt =
+    "{\"and\":[{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}},{\"equals\": {\"partial_state\": true}}]}";
+//"{\"equals\":{\"device_id\": \"" K_DEVICE_ID_FMT "\"}}";
 static const char* subscribe_fw_updates_fmt = "{\"equals\":{\"target\": \"%s\"}}";
 
 static const char* get_fw_update_req_fmt =
@@ -196,22 +196,22 @@ void kuzzle_login()
  * @param request
  * @return request : must be deleted with free()
  */
-static char *_query_add_jwt_token(const char *query){
-    if(_kuzzle.jwt == NULL) {
+static char* _query_add_jwt_token(const char* query)
+{
+    if (_kuzzle.jwt == NULL) {
         return strdup(query);
-    }
-    else
-    {
-        cJSON *j_req = cJSON_Parse(query);
+    } else {
+        cJSON* j_req = cJSON_Parse(query);
         cJSON_AddItemToObject(j_req, "jwt", cJSON_CreateString(_kuzzle.jwt));
-        char *res = cJSON_Print(j_req);
+        char* res = cJSON_Print(j_req);
         cJSON_Delete(j_req);
         return res;
     }
 }
 
-static void _publish_kuzzle_query(const char *query) {
-    char *req = _query_add_jwt_token(query);
+static void _publish_kuzzle_query(const char* query)
+{
+    char* req = _query_add_jwt_token(query);
     ESP_LOGD(TAG, "Publishing msg: %s", query);
     mqtt_publish(_kuzzle.mqtt_client, KUZZLE_REQUEST_TOPIC, req, strlen(req), 0, 0);
     free(req);
@@ -260,12 +260,8 @@ void kuzzle_device_own_state_sub()
         _kuzzle.state = K_STATE_SUBSCRIBING_DEVICE_OWN_STATE;
 
         snprintf(query_buffer, K_DOCUMENT_MAX_SIZE, subscribe_own_state_fmt, K_DEVICE_ID_ARGS(_kuzzle.s->device_id));
-        snprintf(req_buffer,
-                 K_REQUEST_MAX_SIZE,
-                 subscribe_req_fmt,
-                 K_COLLECTION_DEVICE_STATES,
-                 REQ_ID_SUBSCRIBE_STATE,
-                 query_buffer);
+        snprintf(
+            req_buffer, K_REQUEST_MAX_SIZE, subscribe_req_fmt, K_COLLECTION_DEVICE_STATES, REQ_ID_SUBSCRIBE_STATE, query_buffer);
 
         _publish_kuzzle_query(req_buffer);
     }
@@ -287,12 +283,8 @@ void kuzzle_fw_update_sub()
         _kuzzle.state = K_STATE_SUBSCRIBING_FW_UPDATE;
         snprintf(query_buffer, K_DOCUMENT_MAX_SIZE, subscribe_fw_updates_fmt, _kuzzle.s->device_type);
 
-        snprintf(req_buffer,
-                 K_REQUEST_MAX_SIZE,
-                 subscribe_req_fmt,
-                 K_COLLECTION_FW_UPDATES,
-                 REQ_ID_SUBSCRIBE_FW_UPDATE,
-                 query_buffer);
+        snprintf(
+            req_buffer, K_REQUEST_MAX_SIZE, subscribe_req_fmt, K_COLLECTION_FW_UPDATES, REQ_ID_SUBSCRIBE_FW_UPDATE, query_buffer);
 
         _publish_kuzzle_query(req_buffer);
     }
@@ -365,6 +357,8 @@ static void _on_response(cJSON* jresponse)
     cJSON* jrequestid = cJSON_GetObjectItem(jresponse, "requestId");
     assert(jrequestid != NULL);
     assert(jrequestid->type == cJSON_String);
+
+    /* -- Parse response status -- */
 
     cJSON* jstatus = cJSON_GetObjectItem(jresponse, "status");
     assert(jstatus != NULL);
@@ -481,7 +475,7 @@ static void _on_mqtt_subscribed(mqtt_client* client, mqtt_event_data_t* event_da
         case K_STATE_SUBSCRIBING_FW_UPDATE:
             ESP_LOGD(TAG, "MQTT: subscribed to topic: %s", "firmware update");
             _kuzzle.state = K_STATE_READY;
-            if(_kuzzle.s->on_connected)
+            if (_kuzzle.s->on_connected)
                 _kuzzle.s->on_connected();
             break;
         default:
@@ -507,6 +501,8 @@ static void _on_mqtt_published(mqtt_client* client, mqtt_event_data_t* event_dat
  */
 static void _on_mqtt_data_received(mqtt_client* client, mqtt_event_data_t* event_data)
 {
+    cJSON* jresponse = NULL;
+
     ESP_LOGD(TAG,
              "MQTT: data received: %d (%d/%d)",
              event_data->data_length,
@@ -516,7 +512,6 @@ static void _on_mqtt_data_received(mqtt_client* client, mqtt_event_data_t* event
     //    ESP_LOGD(TAG, "\tfrom topic: %.*s", event_data->topic_length, event_data->topic);
     //    ESP_LOGD(TAG, "\tdata: %.*s", event_data->data_length, event_data->data);
 
-    /* -- Parse response status -- */
 
     if (event_data->topic) {
         // if the event contains the topic, then, it's the first one
@@ -532,36 +527,41 @@ static void _on_mqtt_data_received(mqtt_client* client, mqtt_event_data_t* event
     memcpy(_kuzzle.mqtt_message + event_data->data_offset, event_data->data, event_data->data_length);
 
     if (event_data->data_offset + event_data->data_length == event_data->data_total_length) {
-        ESP_LOGD(TAG, "Message fully received...");
+        ESP_LOGD(TAG, "Message fully received on topic: %.*s", event_data->topic_length, event_data->topic);
         ESP_LOGI(TAG, "%s", _kuzzle.mqtt_message);
-    } else
-        return; // FIXME: avoid return in the middle of the function
 
-    cJSON* jresponse = cJSON_Parse(_kuzzle.mqtt_message);
+        jresponse = cJSON_Parse(_kuzzle.mqtt_message);
 
-    if (jresponse == NULL)
-        return; // FIXME
+        if (jresponse == NULL)
+            goto done;
 
-    // doesn't need a null
-    // terminated string
-    assert(jresponse != NULL);
+        if (strcmp(_kuzzle.mqtt_topic, KUZZLE_RESPONSE_TOPIC) == 0) {
+            _on_response(jresponse);
+        } else {
+            // switch according to the source collection to see if its a FW_UPDATE or STATE change nofitication
+            // As we subscribe only once per collection, we can use the collection name to identify the source
+            // of the notification
 
-    if (strcmp(_kuzzle.mqtt_topic, KUZZLE_RESPONSE_TOPIC) == 0) {
-        _on_response(jresponse);
-    } else {
-        // switch according to the source collection to see if its a FW_UPDATE or STATE change nofitication
-        // As we subscribe only once per collection, we can use the collection name to identify the source
-        // of the notification
+            cJSON* jtype = cJSON_GetObjectItem(jresponse, "type");
 
-        cJSON* jcollection = cJSON_GetObjectItem(jresponse, "collection");
+            if (jtype != NULL && strcmp(jtype->valuestring, "TokenExpired") == 0) {
+                ESP_LOGW(TAG, "Login token expired, renewing login and subscriptions");
+                kuzzle_login();
+                goto done;
+            }
 
-        if (strcmp(jcollection->valuestring, K_COLLECTION_DEVICE_STATES) == 0) {
-            _on_device_state_changed(jresponse);
-        } else if (strcmp(jcollection->valuestring, K_COLLECTION_FW_UPDATES) == 0)
-            _on_fw_update_pushed(jresponse);
+            cJSON* jcollection = cJSON_GetObjectItem(jresponse, "collection");
+
+            if (strcmp(jcollection->valuestring, K_COLLECTION_DEVICE_STATES) == 0) {
+                _on_device_state_changed(jresponse);
+            } else if (strcmp(jcollection->valuestring, K_COLLECTION_FW_UPDATES) == 0)
+                _on_fw_update_pushed(jresponse);
+        }
     }
 
-    cJSON_Delete(jresponse);
+done:
+    if (jresponse != NULL)
+        cJSON_Delete(jresponse);
     free(_kuzzle.mqtt_message);
     free(_kuzzle.mqtt_topic);
     _kuzzle.mqtt_message = NULL;

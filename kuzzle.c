@@ -82,6 +82,7 @@ static const char* get_fw_update_req_fmt =
     "\"%d\"}},\"sort\":{\"_kuzzle_info.createdAt\":{\"order\":"
     "\"desc\"}}}}";
 
+
 typedef enum {
     K_STATE_NONE,
     K_STATE_SUBSCRIBING_KUZZLE_RESPONSE,
@@ -153,6 +154,16 @@ k_err_t kuzzle_init(kuzzle_settings_t* settings)
 
     return _kuzzle.mqtt_client != NULL ? K_ERR_NONE : K_ERR_NO_MEM;
 }
+
+/**
+ * @brief kuzzle_get_device_id
+ * @return
+ */
+const char *kuzzle_get_device_id()
+{
+    return _kuzzle.s->device_id;
+}
+
 
 /**
  * @brief kuzzle_check_for_update

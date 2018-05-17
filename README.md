@@ -6,3 +6,4 @@ IoT framework using Kuzzle as a backend
 . Document API
 ...
 
+Hello world!

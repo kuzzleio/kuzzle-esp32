@@ -18,7 +18,7 @@ typedef enum {
 typedef void (*kuzzle_callback)(cJSON* jresponse);
 typedef void (*kuzzle_connected_cd)(void);
 
-typedef char  k_device_id_t[K_DEVICE_ID_MAX_SIZE]; // FIXME: Store the default UID in NVS as a STRING.....
+typedef char  k_device_id_t[K_DEVICE_ID_MAX_SIZE];
 typedef char* k_device_type_t;
 
 typedef struct kuzzle_settings {
@@ -55,7 +55,7 @@ void kuzzle_fw_update_sub();
 /**
  * @brief kuzzle_device_own_state_sub
  */
-void kuzzle_device_own_state_sub(); // TODO: allow one to subscribe to document created/updated/deleted...
+void kuzzle_device_own_state_sub();
 
 /**
  * @brief kuzzle_device_state_pub

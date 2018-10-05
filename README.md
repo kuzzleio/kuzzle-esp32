@@ -24,6 +24,10 @@ $ tree -d -L 2
 └── main
 ```
 
+## Setup your Kuzzle
+
+In order to use this component, you will have to setup Kuzzle as describe in this [how-to](https://github.com/kuzzleio/kuzzle-ow-to)
+
 ## Usage
 
 Initiallize and connect to Kuzzle:

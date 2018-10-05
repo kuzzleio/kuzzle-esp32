@@ -8,12 +8,112 @@
 
     - @ref kuzzle_init "Initialize Kuzzle ESP32 component"
     - @ref kuzzle_device_state_pub "Store/publish device state"
-    - @ref receiving_state "Receiving state changes from Kuzzle"
+    - @ref receiving_partial_states "Receiving state changes from Kuzzle"
  */
 
-/** \page receiving_state Receiving state changes from Kuzzle
+/** \page receiving_partial_states Receiving state changes from Kuzzle
  * 
+ * Once Kuzzle ESP32 component has been initialized, it will have subscribed et will receive
+ * any request requiering the device to change his state. 
  * 
+ * This is done by creating a document as follow in the collection `device-state`:
+ *
+ * ``` JSON
+ * {
+ *   "device_id": "my-device-id",
+ *   "partial_state": true,
+ *   "state": {
+ *     "g": 0,
+ *   }
+ * }
+ * ```
+ * The `partial_state` property set to `true` indicates the document doesn't contain the 
+ * whole state of the device, but rather represent a directive.
+ * 
+ * The target device is reponsible for applying the requested change to its state, and shall
+ * then publish a new full state.
+ * 
+ * Using previous exemple, an RGB light whose state would be
+ * ``` JSON
+ * {
+ *   "device_id": "my-device-id",
+ *   "device_type": "k-rgb-light",
+ *   "partial_state": false,
+ *   "state": {
+ *     "r": 255,
+ *     "g": 255,
+ *     "b": 255,
+ *     "on": true
+ *   }
+ * }
+ * ```
+ * 
+ * After applying the requested changes to its state, would publish a new full state as follow:
+ * 
+ * ``` JSON
+ * {
+ *   "device_id": "my-device-id",
+ *   "device_type": "k-rgb-light",
+ *   "partial_state": false,
+ *   "state": {
+ *     "r": 255,
+ *     "g": 0,
+ *     "b": 255,
+ *     "on": true
+ *   }
+ * }
+ * ```
+ * 
+ * In you application, when the device will receive a state change request, the provided \ref on_connected 
+ * callback will be called with the partial state as parameter.
+ * 
+ * Here is an example of implementing such a function:
+ * 
+ * ``` C
+ * void kuzzle_on_light_state_update(cJSON *jpartial_state)
+ * {
+ *   cJSON *jstatus = cJSON_GetObjectItem(jpartial_state, "status");
+ *   assert(jstatus != NULL);
+ * 
+ *   int16_t status_value = jstatus->valueint;
+ * 
+ *   if (status_value == K_STATUS_NO_ERROR)
+ *   {
+ *     cJSON *jresult = cJSON_GetObjectItem(jpartial_state, "result");
+ *     cJSON *jsource = cJSON_GetObjectItem(jresult, "_source");
+ *     cJSON *jstate = cJSON_GetObjectItem(jsource, "state");
+ * 
+ *     cJSON *r = cJSON_GetObjectItem(jstate, "r");
+ *     if (r != NULL)
+ *       _light_state.r = r->valueint;
+ * 
+ *     cJSON *g = cJSON_GetObjectItem(jstate, "g");
+ *     if (g != NULL)
+ *       _light_state.g = g->valueint;
+ * 
+ *     cJSON *b = cJSON_GetObjectItem(jstate, "b");
+ *     if (b != NULL)
+ *       _light_state.b = b->valueint;
+ * 
+ *     cJSON *on = cJSON_GetObjectItem(jstate, "on");
+ *     if (on != NULL)
+ *       _light_state.on = on->valueint;
+ * 
+ *     ESP_LOGD(TAG,
+ *              "New light state: r= 0x%02x, g= 0x%02x, b= 0x%02x, on = %s",
+ *              _light_state.r,
+ *              _light_state.g,
+ *              _light_state.b,
+ *              _light_state.on ? "true" : "false");
+ * 
+ *     _update_light(); // Applies the new state to the hardware and publish it to Kuzzle
+ *   }
+ *   else
+ *   {
+ *     ESP_LOGD(TAG, "Error: Something went wrong");
+ *   }
+ * }
+ * ```
  * 
  */
 
@@ -78,7 +178,7 @@ typedef struct kuzzle_settings {
     const char* password; ///< The password for `username` (using `local` authentication strategy)
 
     kuzzle_callback     on_fw_update_notification;  ///< Client callback to be called when a new firmware is available. Can be NULL.
-    kuzzle_callback     on_device_state_changed_notification; ///< Client callback to be called when a state change is requested from Kuzzle. Can be NULL.
+    kuzzle_callback     on_device_state_changed_notification; ///< Client callback to be called when a state change is requested from Kuzzle. Can be NULL. See \ref receiving_partial_states
     kuzzle_connected_cd on_connected;  ///< Client callback to be called when the device is properlly connected to Kuzzle. Can be NULL.
 
 } kuzzle_settings_t;

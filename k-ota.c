@@ -36,20 +36,6 @@ typedef enum OTAState {
 static HttpResponseParseState http_state = HTTP_STATE_NONE;
 static OTAState               _ota_state = OTA_STATE_IDLE;
 
-static void _log_buffer(const char* data, size_t len)
-{
-#if 0
-    for (int i = 0; i < len; i++) {
-        ets_printf("%02x ", *(data + i));
-        if (i % 16 == 7) {
-            ets_printf(" ");
-        } else if (i % 16 == 15)
-            ets_printf("\n");
-    }
-    ets_printf("\n");
-#endif
-}
-
 /**
  * @brief _fatal_error
  *

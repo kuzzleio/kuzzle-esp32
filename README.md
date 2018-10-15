@@ -24,9 +24,9 @@ $ tree -d -L 2
 └── main
 ```
 
-## Setup your Kuzzle
+## Setup Kuzzle
 
-In order to use this component, you will have to setup Kuzzle as describe in this [how-to](https://github.com/kuzzleio/kuzzle-ow-to)
+In order to use this component, you will have to setup Kuzzle as describe in this [how-to](https://github.com/kuzzleio/kuzzle-how-to/blob/KZL-467-use-kuzzle-and-ESP32-to-make-RGB-LED-controllable-over-the-Internet/kuzzle-esp32/01-rgb-led/rgb-led.md#preparing-the-kuzzle-backend-iot-environment)
 
 ## Usage
 

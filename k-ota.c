@@ -231,7 +231,6 @@ void get_firmware()
         }
         if (http_state == HTTP_STATE_BODY && data_len > 0) {
             body_len += data_len;
-            _log_buffer(data, data_len);
             err = esp_ota_write(update_handle, data, data_len);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG,
@@ -267,7 +266,7 @@ void get_firmware()
         esp_restart();
         return true; // should never be called
     } else {
-        ESP_LOGE(TAG, "Error during firmware download...")
+        ESP_LOGE(TAG, "Error during firmware download...");
         _fatal_error();
     }
     return false;

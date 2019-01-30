@@ -184,7 +184,7 @@ void kuzzle_query_for_fw_update()
 {
   if (_kuzzle.mqtt_client == NULL)
   {
-    ESP_LOGW(TAG, "MQTT client not initialized yet...")
+    ESP_LOGW(TAG, "MQTT client not initialized yet...");
   }
   else
   {
@@ -200,7 +200,7 @@ void kuzzle_login()
 {
   if (_kuzzle.mqtt_client == NULL)
   {
-    ESP_LOGW(TAG, "kuzzle_login: MQTT client not initialized yet...")
+    ESP_LOGW(TAG, "kuzzle_login: MQTT client not initialized yet...");
   }
   else
   {
@@ -260,7 +260,7 @@ void kuzzle_device_state_pub(const char *device_state)
 
   if (_kuzzle.mqtt_client == NULL)
   {
-    ESP_LOGW(TAG, "MQTT client not initialized yet...")
+    ESP_LOGW(TAG, "MQTT client not initialized yet...");
   }
   else
   {
@@ -312,7 +312,7 @@ void kuzzle_fw_update_sub()
 
   if (_kuzzle.mqtt_client == NULL)
   {
-    ESP_LOGW(TAG, "MQTT client not initialized yet...")
+    ESP_LOGW(TAG, "MQTT client not initialized yet...");
   }
   else
   {
